@@ -1,0 +1,457 @@
+name: Build Limbus Auto APK
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      - name: Write the app files
+        run: |
+          mkdir -p "$(dirname 'settings.gradle.kts')"
+          cat > 'settings.gradle.kts' <<'LIMBUS_EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "LimbusAuto"
+          include(":app")
+          LIMBUS_EOF
+          mkdir -p "$(dirname 'build.gradle.kts')"
+          cat > 'build.gradle.kts' <<'LIMBUS_EOF'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          LIMBUS_EOF
+          mkdir -p "$(dirname 'gradle.properties')"
+          cat > 'gradle.properties' <<'LIMBUS_EOF'
+          org.gradle.jvmargs=-Xmx2g
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          kotlin.code.style=official
+          LIMBUS_EOF
+          mkdir -p "$(dirname 'app/build.gradle.kts')"
+          cat > 'app/build.gradle.kts' <<'LIMBUS_EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.limbusauto"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.limbusauto"
+                  minSdk = 30
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "0.1"
+              }
+
+              buildTypes {
+                  debug {
+                      isMinifyEnabled = false
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+
+          dependencies {
+              // No external libraries needed.
+          }
+          LIMBUS_EOF
+          mkdir -p "$(dirname 'app/src/main/AndroidManifest.xml')"
+          cat > 'app/src/main/AndroidManifest.xml' <<'LIMBUS_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+              <application
+                  android:allowBackup="false"
+                  android:label="Limbus Auto"
+                  android:theme="@android:style/Theme.Material.NoActionBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:screenOrientation="landscape">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".BotService"
+                      android:exported="false"
+                      android:foregroundServiceType="mediaProjection" />
+
+                  <service
+                      android:name=".TapService"
+                      android:exported="true"
+                      android:label="Limbus Auto taps"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_config" />
+                  </service>
+              </application>
+          </manifest>
+          LIMBUS_EOF
+          mkdir -p "$(dirname 'app/src/main/res/xml/accessibility_config.xml')"
+          cat > 'app/src/main/res/xml/accessibility_config.xml' <<'LIMBUS_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeWindowStateChanged"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:canPerformGestures="true"
+              android:description="@string/accessibility_description"
+              android:notificationTimeout="100" />
+          LIMBUS_EOF
+          mkdir -p "$(dirname 'app/src/main/res/values/strings.xml')"
+          cat > 'app/src/main/res/values/strings.xml' <<'LIMBUS_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="accessibility_description">Lets Limbus Auto tap the Win Rate and Start buttons for you.</string>
+          </resources>
+          LIMBUS_EOF
+          mkdir -p "$(dirname 'app/src/main/java/com/limbusauto/TapService.kt')"
+          cat > 'app/src/main/java/com/limbusauto/TapService.kt' <<'LIMBUS_EOF'
+          package com.limbusauto
+
+          import android.accessibilityservice.AccessibilityService
+          import android.accessibilityservice.GestureDescription
+          import android.content.Intent
+          import android.graphics.Path
+          import android.view.accessibility.AccessibilityEvent
+
+          /** Lets the bot tap the screen. Must be switched on in Accessibility settings. */
+          class TapService : AccessibilityService() {
+
+              companion object {
+                  @Volatile
+                  var instance: TapService? = null
+              }
+
+              override fun onServiceConnected() {
+                  instance = this
+              }
+
+              override fun onUnbind(intent: Intent?): Boolean {
+                  instance = null
+                  return super.onUnbind(intent)
+              }
+
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+
+              override fun onInterrupt() {}
+
+              fun tap(x: Float, y: Float) {
+                  val path = Path().apply { moveTo(x, y) }
+                  val stroke = GestureDescription.StrokeDescription(path, 0, 60)
+                  val gesture = GestureDescription.Builder().addStroke(stroke).build()
+                  dispatchGesture(gesture, null, null)
+              }
+          }
+          LIMBUS_EOF
+          mkdir -p "$(dirname 'app/src/main/java/com/limbusauto/Detector.kt')"
+          cat > 'app/src/main/java/com/limbusauto/Detector.kt' <<'LIMBUS_EOF'
+          package com.limbusauto
+
+          import android.content.Context
+          import android.graphics.Bitmap
+          import android.util.Base64
+
+          /**
+           * Finds the Win Rate button and checks whether the Start gear is glowing orange.
+           * All numbers are for a 2392 x 1080 landscape screen and get scaled to the real size.
+           */
+          object Detector {
+              const val REF_W = 2392.0
+              const val REF_H = 1080.0
+
+              // Win Rate button text, cut from the user's own screenshot (top-left corner of the template)
+              private const val WR_X = 1895
+              private const val WR_Y = 727
+              private const val WR_W = 130
+              private const val WR_H = 56
+              private const val SEARCH_PAD = 12
+
+              // Start gear area
+              private const val GEAR_X = 1710
+              private const val GEAR_Y = 700
+              private const val GEAR_W = 150
+              private const val GEAR_H = 150
+
+              // Where to tap (reference coordinates)
+              const val WIN_RATE_TAP_X = 1960f
+              const val WIN_RATE_TAP_Y = 753f
+              const val GEAR_TAP_X = 1785f
+              const val GEAR_TAP_Y = 775f
+
+              private var tplX = IntArray(0)
+              private var tplY = IntArray(0)
+
+              // Win Rate text outline, 130 x 56 pixels, packed as bits (row by row) and base64 encoded
+              private const val MASK_B64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHjjx4AAAAAAAAAAAAAAAAAeOPAAAAAAAAAAAAAAAAAAB448AAAAAAAAAAAAAAAAAAHjjwAAAAAAAAAAAAAAAAAAeOPHiPAAAAAAAAAAAAAAAB448eP+AAAAAAAAAAAAAAAHjjx4/4AAAAAAAAAAAAAAAeeOHjngAAAAAAAAAAAAAAA544eOOAAAAAAAAAAAAAAADnzh444AAAAAAAAAAAAAAAOfOHjjgAAAAAAAAAAAAAAAZ8weOOAAAAAAAAAAAAAAAB23B444AAAAAAAAAAAAAAAHx4HjjgAAAAAAAAAAAAAAAPHgeOOAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAH/AAAAAAAAAAAAAAAAAAAAf+AAAgAAAAAAAAAAAAAAAB54AAGAAAAAAAAAAAAAAAAHngAA4AAAAAAAAAAAAAAAAeeH+H4fwAAAAAAAAAAAAAB54/8fj/gAAAAAAAAAAAAAHnjzx4POAAAAAAAAAAAAAAfwAPHg84AAAAAAAAAAAAAB/wA8eDzgAAAAAAAAAAAAAHnh/x4P+AAAAAAAAAAAAAAeePvHg8AAAAAAAAAAAAAAB5488eDwAAAAAAAAAAAAAAHnjzx4POAAAAAAAAAAAAAAeeP/H4/4AAAAAAAAAAAAAB44f8Pj/gAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+
+              fun init(@Suppress("UNUSED_PARAMETER") context: Context) {
+                  if (tplX.isNotEmpty()) return
+                  val bytes = Base64.decode(MASK_B64, Base64.DEFAULT)
+                  val xs = ArrayList<Int>()
+                  val ys = ArrayList<Int>()
+                  var n = 0
+                  for (i in 0 until WR_W * WR_H) {
+                      val bit = (bytes[i / 8].toInt() shr (7 - i % 8)) and 1
+                      if (bit == 1) {
+                          // keep every 2nd point, it is plenty and faster
+                          if (n % 2 == 0) {
+                              xs.add(i % WR_W)
+                              ys.add(i / WR_W)
+                          }
+                          n++
+                      }
+                  }
+                  tplX = xs.toIntArray()
+                  tplY = ys.toIntArray()
+              }
+
+              private fun isText(c: Int): Boolean {
+                  val r = (c shr 16) and 0xFF
+                  val g = (c shr 8) and 0xFF
+                  val b = c and 0xFF
+                  return r > 190 && g in 131..214 && b in 61..159
+              }
+
+              private fun isOrange(c: Int): Boolean {
+                  val r = (c shr 16) and 0xFF
+                  val g = (c shr 8) and 0xFF
+                  val b = c and 0xFF
+                  return r > 220 && g in 71..169 && b < 70
+              }
+
+              /** True if the Win Rate button is on screen (so we are on the battle planning screen). */
+              fun winRateVisible(bmp: Bitmap, w: Int, h: Int): Boolean {
+                  if (tplX.isEmpty()) return false
+                  val sx = w / REF_W
+                  val sy = h / REF_H
+                  val rx = ((WR_X - SEARCH_PAD) * sx).toInt().coerceAtLeast(0)
+                  val ry = ((WR_Y - SEARCH_PAD) * sy).toInt().coerceAtLeast(0)
+                  val rx2 = ((WR_X + WR_W + SEARCH_PAD) * sx).toInt().coerceAtMost(w)
+                  val ry2 = ((WR_Y + WR_H + SEARCH_PAD) * sy).toInt().coerceAtMost(h)
+                  val rw = rx2 - rx
+                  val rh = ry2 - ry
+                  if (rw <= 0 || rh <= 0) return false
+                  val px = IntArray(rw * rh)
+                  bmp.getPixels(px, 0, rw, rx, ry, rw, rh)
+
+                  var best = 0.0
+                  var oy = -SEARCH_PAD
+                  while (oy <= SEARCH_PAD) {
+                      var ox = -SEARCH_PAD
+                      while (ox <= SEARCH_PAD) {
+                          var hits = 0
+                          for (i in tplX.indices) {
+                              val x = ((WR_X + tplX[i] + ox) * sx).toInt() - rx
+                              val y = ((WR_Y + tplY[i] + oy) * sy).toInt() - ry
+                              if (x in 0 until rw && y in 0 until rh && isText(px[y * rw + x])) hits++
+                          }
+                          val score = hits.toDouble() / tplX.size
+                          if (score > best) best = score
+                          ox += 2
+                      }
+                      oy += 2
+                  }
+                  return best >= 0.6
+              }
+
+              /** True when the Start gear is glowing orange (Win Rate has been applied). */
+              fun gearReady(bmp: Bitmap, w: Int, h: Int): Boolean {
+                  val sx = w / REF_W
+                  val sy = h / REF_H
+                  val rx = (GEAR_X * sx).toInt().coerceAtLeast(0)
+                  val ry = (GEAR_Y * sy).toInt().coerceAtLeast(0)
+                  val rw = (GEAR_W * sx).toInt().coerceAtMost(w - rx)
+                  val rh = (GEAR_H * sy).toInt().coerceAtMost(h - ry)
+                  if (rw <= 0 || rh <= 0) return false
+                  val px = IntArray(rw * rh)
+                  bmp.getPixels(px, 0, rw, rx, ry, rw, rh)
+                  var orange = 0
+                  for (c in px) if (isOrange(c)) orange++
+                  return orange.toDouble() / px.size > 0.2
+              }
+          }
+          LIMBUS_EOF
+          mkdir -p "$(dirname 'app/src/main/java/com/limbusauto/BotService.kt')"
+          cat > 'app/src/main/java/com/limbusauto/BotService.kt' <<'LIMBUS_EOF'
+          package com.limbusauto
+
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.app.Service
+          import android.content.Intent
+          import android.content.pm.ServiceInfo
+          import android.graphics.Bitmap
+          import android.graphics.PixelFormat
+          import android.hardware.display.DisplayManager
+          import android.hardware.display.VirtualDisplay
+          import android.media.Image
+          import android.media.ImageReader
+          import android.media.projection.MediaProjection
+          import android.media.projection.MediaProjectionManager
+          import android.os.Handler
+          import android.os.IBinder
+          import android.os.Looper
+
+          /** Watches the screen and taps Win Rate, then Start, over and over. */
+          class BotService : Service() {
+
+              companion object {
+                  const val ACTION_STOP = "com.limbusauto.STOP"
+                  @Volatile
+                  var running = false
+              }
+
+              private var projection: MediaProjection? = null
+              private var display: VirtualDisplay? = null
+              private var reader: ImageReader? = null
+              private var worker: Thread? = null
+
+              override fun onBind(intent: Intent?): IBinder? = null
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  if (intent == null || intent.action == ACTION_STOP) {
+                      stopBot()
+                      stopSelf()
+                      return START_NOT_STICKY
+                  }
+                  if (running) return START_NOT_STICKY
+
+                  startForeground(
+                      1, buildNotification(),
+                      ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                  )
+
+                  val code = intent.getIntExtra("code", 0)
+                  @Suppress("DEPRECATION")
+                  val data: Intent? = intent.getParcelableExtra("data")
+                  val w = intent.getIntExtra("w", 0)
+                  val h = intent.getIntExtra("h", 0)
+                  val dpi = intent.getIntExtra("dpi", 400)
+                  if (data == null || w <= 0 || h <= 0) {
+                      stopSelf()
+                      return START_NOT_STICKY
+                  }
+
+                  Detector.init(this)
+
+                  val mpm = getSystemService(MediaProjectionManager::class.java)
+                  val proj = mpm.getMediaProjection(code, data)
+                  proj.registerCallback(object : MediaProjection.Callback() {
+                      override fun onStop() {
+                          stopBot()
+                          stopSelf()
+                      }
+                  }, Handler(Looper.getMainLooper()))
+                  projection = proj
+
+                  val rd = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2)
+                  reader = rd
+                  display = proj.createVirtualDisplay(
+                      "limbus-capture", w, h, dpi,
+                      DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                      rd.surface, null, null
+                  )
+
+                  running = true
+                  worker = Thread { loop(rd, w, h) }.also { it.start() }
+                  return START_NOT_STICKY
+              }
+
+              private fun loop(rd: ImageReader, w: Int, h: Int) {
+                  val sx = w / Detector.REF_W.toFloat()
+                  val sy = h / Detector.REF_H.toFloat()
+                  var last: Bitmap? = null
+                  var winRateTaps = 0
+
+                  while (running) {
+                      // The screen only sends a new frame when something changes, so keep the last one.
+                      val img = rd.acquireLatestImage()
+                      if (img != null) {
+                          last = toBitmap(img, w, h)
+                          img.close()
+                      }
+                      val frame = last
+                      val tapper = TapService.instance
+                      if (frame == null || tapper == null) {
+                          sleep(800)
+                          continue
+                      }
+
+                      if (Detector.winRateVisible(frame, w, h)) {
+                          if (Detector.gearReady(frame, w, h)) {
+                              tapper.tap(Detector.GEAR_TAP_X * sx, Detector.GEAR_TAP_Y * sy)
+                              winRateTaps = 0
+                              sleep(7000) // let the fight play out
+                          } else {
+                              tapper.tap(Detector.WIN_RATE_TAP_X * sx, Detector.WIN_RATE_TAP_Y * sy)
+                              winRateTaps++
+                              // if Win Rate keeps not working, slow down instead of spamming
+                              sleep(if (winRateTaps >= 5) 10000 else 1500)
+                              if (winRateTaps >= 5) winRateTaps = 0
+                          }
+                      } else {
+                          sleep(700)
+                      }
+                  }
+              }
+
+              private fun toBitmap(img: Image, w: Int, h: Int): Bitmap {
+                  val plane = img.planes[0]
+                  val pixelStride = plane.pixelStride
+                  val rowPadding = plane.rowStride - pixelStride * w
+                  val bmp = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
+                  bmp.copyPixelsFromBuffer(plane.buffer)
+          
